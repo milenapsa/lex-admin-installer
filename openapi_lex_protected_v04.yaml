@@ -1,0 +1,400 @@
+openapi: 3.1.0
+info:
+  title: Lex API Protegida — homosapiens.id
+  version: 0.4.0-datajud-search-core
+  description: >
+    Action protegida da Lex. A Lex não inventa. Toda resposta jurídica deve
+    trazer fonte ou declarar fonte insuficiente. Revisão humana obrigatória.
+servers:
+  - url: https://lex.homosapiens.id
+components:
+  securitySchemes:
+    LexApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Lex-API-Key
+  schemas:
+    GenericQuery:
+      type: object
+      additionalProperties: true
+      properties:
+        query:
+          type: string
+          description: Termo, tese, fato, documento ou pergunta jurídica.
+        q:
+          type: string
+        tribunal:
+          type: string
+        numero_cnj:
+          type: string
+        source_text:
+          type: string
+        draft:
+          type: string
+        contexto:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+      required: []
+    LexResponse:
+      type: object
+      additionalProperties: true
+security:
+  - LexApiKeyAuth: []
+paths:
+  /health:
+    get:
+      operationId: lexHealthProtectedDomain
+      summary: Health protegido da Lex
+      security:
+        - LexApiKeyAuth: []
+      responses:
+        "200":
+          description: Status da Lex
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/readiness:
+    get:
+      operationId: lexReadinessProtectedDomain
+      summary: Readiness protegido da Lex
+      security:
+        - LexApiKeyAuth: []
+      responses:
+        "200":
+          description: Readiness
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/memory/status:
+    get:
+      operationId: lexMemoryStatusProtectedDomain
+      summary: Status público/protegido da memória Lex
+      security:
+        - LexApiKeyAuth: []
+      responses:
+        "200":
+          description: Status da memória
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/datajud/health:
+    get:
+      operationId: lexDataJudHealthProtectedDomain
+      summary: Health seguro do DataJud Engine
+      description: Não retorna segredo. Indica se a chave DataJud está configurada fora do chat.
+      security:
+        - LexApiKeyAuth: []
+      responses:
+        "200":
+          description: Status do motor DataJud
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/datajud/processos/{numero_cnj}:
+    get:
+      operationId: lexDataJudGetProcesso
+      summary: Consulta segura de metadados processuais via DataJud
+      description: >
+        Consulta processo público por CNJ. Não inventa andamento, prazo,
+        resultado ou documento. Exige revisão humana.
+      security:
+        - LexApiKeyAuth: []
+      parameters:
+        - name: numero_cnj
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Número CNJ com ou sem pontuação.
+        - name: tribunal
+          in: query
+          required: false
+          schema:
+            type: string
+            default: tjsc
+          description: Sigla do tribunal, como tjsc, trf4, stj, stf, tst.
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 25
+            default: 1
+      responses:
+        "200":
+          description: Consulta realizada, se DataJud estiver configurado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+        "403":
+          description: Chave Lex inválida.
+        "503":
+          description: DataJud sem segredo configurado fora do chat.
+
+  /v1/sources/registry:
+    get:
+      operationId: lexSourcesRegistry
+      summary: Registro de fontes públicas da Lex
+      security:
+        - LexApiKeyAuth: []
+      responses:
+        "200":
+          description: Fontes registradas, status, limitações e revisão humana.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/search/global:
+    post:
+      operationId: lexSearchGlobal
+      summary: Busca jurídica global protegida
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Resultado de busca com fontes ou plano de fontes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/search/legislacao:
+    post:
+      operationId: lexSearchLegislacao
+      summary: Busca de legislação
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Resultado de legislação.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/search/jurisprudencia:
+    post:
+      operationId: lexSearchJurisprudencia
+      summary: Busca de jurisprudência com fonte obrigatória
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Resultado de jurisprudência.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/search/processos-publicos:
+    post:
+      operationId: lexSearchProcessosPublicos
+      summary: Busca de processos públicos/metadados
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Resultado de processos públicos.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/search/diarios:
+    post:
+      operationId: lexSearchDiarios
+      summary: Busca de diários e publicações
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Resultado de diários.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/documentos/analisar:
+    post:
+      operationId: lexDocumentosAnalisar
+      summary: Análise segura de documento/texto jurídico
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Análise com revisão humana obrigatória.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/documentos/extrair-fatos:
+    post:
+      operationId: lexDocumentosExtrairFatos
+      summary: Extração de fatos, datas, valores e lacunas
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Fatos extraídos.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/casos/montar-linha-do-tempo:
+    post:
+      operationId: lexCasosMontarLinhaDoTempo
+      summary: Monta linha do tempo de caso
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Linha do tempo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/casos/sugerir-buscas:
+    post:
+      operationId: lexCasosSugerirBuscas
+      summary: Sugere buscas jurídicas e fontes a consultar
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Sugestões de buscas.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/veritas/fontes:
+    post:
+      operationId: lexVeritasFontes
+      summary: Verifica fontes citadas ou necessárias
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Checagem de fontes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/veritas/aderencia:
+    post:
+      operationId: lexVeritasAderencia
+      summary: Checa aderência de jurisprudência/tese aos fatos
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Aderência.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
+
+  /v1/drafts/audit:
+    post:
+      operationId: lexDraftAudit
+      summary: Audita rascunho/minuta
+      description: Identifica riscos, falta de fonte, promessas indevidas e necessidade de revisão humana.
+      security:
+        - LexApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericQuery"
+      responses:
+        "200":
+          description: Auditoria da minuta.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LexResponse"
