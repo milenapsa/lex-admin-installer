@@ -1,263 +1,128 @@
 #!/usr/bin/env sh
 set -eu
-
-echo "LEX_SEARCH_CORE_V06_DEPLOY_START"
-
+echo "LEX_SEARCH_CORE_V07_PUBLIC_CONNECTORS_START"
 NET="${NET:-gateway-health_default}"
 CADDY="${CADDY:-media-studio-caddy}"
 SEARCH="${SEARCH:-homosapiens-lex-search}"
-APP_DIR="/srv/lex-search-core-v06"
+APP_DIR="/srv/lex-search-core-v07"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$APP_DIR" /tmp/lex-v07-backups
 
-apk add --no-cache curl python3 >/dev/null 2>&1 || true
-
-echo "1) Preflight"
-docker network inspect "$NET" >/dev/null
-docker ps --format '{{.Names}}' | grep -qx "$CADDY"
-mkdir -p "$APP_DIR" /tmp/lex-v06-backups
-
-echo "2) Writing Lex Search Core v0.6 server"
 cat > "$APP_DIR/server.py" <<'PY'
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
-import json, time, re, os, uuid
+from urllib.parse import urlparse, quote
+from urllib.request import Request, urlopen
+import json, time, os
 
-VERSION = "0.6.0-contract-core"
-SERVICE = "lex-search-core"
-STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+VERSION="0.7.0-public-connectors"
+SERVICE="lex-search-core"
+STARTED=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-SOURCES = [
-    {"id":"cnj_datajud","name":"CNJ DataJud API Pública","status":"needs_secret_or_connector_validation","coverage":["processos","movimentos","metadados"],"risk":"A3/A4"},
-    {"id":"lexml_sru","name":"LexML/SRU","status":"planned","coverage":["legislacao","normas"],"risk":"A2"},
-    {"id":"dou_inlabs","name":"DOU/INLABS","status":"planned_credentials_required_when_applicable","coverage":["diarios","publicacoes"],"risk":"A3"},
-    {"id":"stj_ckan","name":"STJ CKAN/Dados Abertos","status":"planned","coverage":["jurisprudencia","datasets"],"risk":"A2"},
-    {"id":"stf_corte_aberta","name":"STF/Corte Aberta","status":"planned","coverage":["jurisprudencia","processos_publicos"],"risk":"A2"},
-    {"id":"tse_dados_abertos","name":"TSE Dados Abertos","status":"planned","coverage":["datasets","jurisprudencia_eleitoral"],"risk":"A2"},
-    {"id":"tribunais_datajud","name":"TJs/TRFs/TRTs via DataJud quando disponível","status":"planned_or_needs_secret","coverage":["processos","movimentos"],"risk":"A3/A4"},
-    {"id":"diarios_oficiais","name":"Diários oficiais judiciais/executivos/administrativos","status":"planned","coverage":["publicacoes","monitoramento"],"risk":"A3"},
-]
-
-CAPABILITIES = [
-    {"id":"sources.registry","endpoint":"GET /v1/sources/registry","status":"ok"},
-    {"id":"search.global","endpoint":"POST /v1/search/global","status":"ok_contract_sources_planned"},
-    {"id":"search.legislacao","endpoint":"POST /v1/search/legislacao","status":"ok_contract_sources_planned"},
-    {"id":"search.jurisprudencia","endpoint":"POST /v1/search/jurisprudencia","status":"ok_contract_sources_planned"},
-    {"id":"processos.search","endpoint":"POST /v1/processos/search","status":"contract_ready_no_invention"},
-    {"id":"processos.get","endpoint":"GET /v1/processos/{numero_cnj}","status":"contract_ready_source_insufficient_until_connector"},
-    {"id":"diarios.search","endpoint":"POST /v1/diarios/search","status":"contract_ready_sources_planned"},
-    {"id":"watchlists.create","endpoint":"POST /v1/watchlists","status":"dry_run_contract_no_persistence"},
-    {"id":"events.list","endpoint":"GET /v1/events","status":"contract_ready_empty_until_monitoring"},
-    {"id":"refresh_jobs.create","endpoint":"POST /v1/refresh-jobs","status":"dry_run_contract_no_persistence"},
-    {"id":"deadline_calculator","endpoint":"planned","status":"planned_human_review_required"},
-    {"id":"risk_due_diligence","endpoint":"planned","status":"planned_human_review_required"},
+SOURCES=[
+ {"id":"stj_ckan","name":"STJ CKAN/Dados Abertos","status":"connected","coverage":["datasets","metadados públicos"],"risk":"A2","endpoint":"https://dadosabertos.web.stj.jus.br/api/3/action/package_search"},
+ {"id":"tse_dados_abertos","name":"TSE Dados Abertos","status":"connected","coverage":["datasets","metadados públicos"],"risk":"A2","endpoint":"https://dadosabertos.tse.jus.br/api/3/action/package_search"},
+ {"id":"lexml_sru","name":"LexML/SRU","status":"blocked_security_challenge","coverage":["legislação","normas"],"risk":"A2"},
+ {"id":"stf_corte_aberta","name":"STF/Corte Aberta","status":"tls_validation_failed","coverage":["jurisprudência","processos públicos"],"risk":"A2"},
+ {"id":"cnj_datajud","name":"CNJ DataJud API Pública","status":"secret_missing","coverage":["processos","movimentos","metadados"],"risk":"A3/A4"},
+ {"id":"dou_inlabs","name":"DOU/INLABS","status":"credentials_missing","coverage":["diários","publicações"],"risk":"A3"},
+ {"id":"diarios_oficiais","name":"Diários oficiais","status":"planned","coverage":["publicações","monitoramento"],"risk":"A3"},
 ]
 
 def now():
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+ return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 def base(status="ok", **kw):
-    data = {
-        "status": status,
-        "service": SERVICE,
-        "version": VERSION,
-        "generated_at": now(),
-        "human_review_required": True,
-        "no_invention_policy": True,
-    }
-    data.update(kw)
-    return data
+ d={"status":status,"service":SERVICE,"version":VERSION,"generated_at":now(),"human_review_required":True,"no_invention_policy":True}
+ d.update(kw); return d
 
-def safe_query(obj):
-    if isinstance(obj, dict):
-        return obj.get("query") or obj.get("q") or obj.get("numero_cnj") or obj.get("term") or obj.get("nome") or obj.get("documento") or obj
-    return obj
+def fetch_json(url, timeout=20):
+ req=Request(url, headers={"User-Agent":"HomoSapiens-Lex/0.7 (+https://homosapiens.id)"})
+ with urlopen(req, timeout=timeout) as r:
+  return json.loads(r.read().decode("utf-8","replace"))
 
-def planned_sources(kind):
-    ids = {
-        "legislacao": ["lexml_sru","dou_inlabs"],
-        "jurisprudencia": ["stj_ckan","stf_corte_aberta","tse_dados_abertos","tribunais_datajud"],
-        "processos": ["cnj_datajud","tribunais_datajud"],
-        "diarios": ["dou_inlabs","diarios_oficiais"],
-        "global": [s["id"] for s in SOURCES],
-    }
-    wanted = set(ids.get(kind, ids["global"]))
-    return [s for s in SOURCES if s["id"] in wanted]
+def ckan_search(source, endpoint, query, rows=5):
+ try:
+  data=fetch_json(endpoint+"?q="+quote(query)+"&rows="+str(rows))
+  result=data.get("result",{})
+  items=[]
+  for x in result.get("results",[])[:rows]:
+   items.append({
+    "source_id":source,
+    "title":x.get("title") or x.get("name"),
+    "description":(x.get("notes") or "")[:800],
+    "url":x.get("url") or ("https://dadosabertos.web.stj.jus.br/dataset/"+x.get("name","") if source=="stj_ckan" else "https://dadosabertos.tse.jus.br/dataset/"+x.get("name","")),
+    "metadata_modified":x.get("metadata_modified"),
+    "type":"dataset_catalog"
+   })
+  return {"ok":True,"count":result.get("count",len(items)),"items":items}
+ except Exception as e:
+  return {"ok":False,"error":type(e).__name__+": "+str(e)[:240],"items":[]}
 
-def cnj_like(s):
-    return bool(re.search(r"\d{7}[-.]?\d{2}[.]?\d{4}[.]?\d[.]?\d{2}[.]?\d{4}", s or ""))
+def do_search(query, limit=5):
+ connectors=[]
+ results=[]
+ evidence=[]
+ for s in SOURCES:
+  if s["id"]=="stj_ckan":
+   r=ckan_search("stj_ckan",s["endpoint"],query,min(limit,10)); connectors.append({"source_id":"stj_ckan",**r}); results+=r["items"]
+  elif s["id"]=="tse_dados_abertos":
+   r=ckan_search("tse_dados_abertos",s["endpoint"],query,min(limit,10)); connectors.append({"source_id":"tse_dados_abertos",**r}); results+=r["items"]
+ connected=[s for s in SOURCES if s["status"]=="connected"]
+ for item in results:
+  evidence.append({"source":item["source_id"],"title":item["title"],"url":item["url"],"kind":"official_open_data_catalog"})
+ substantive=bool(results)
+ message=("Foram consultados catálogos oficiais de dados abertos. Os itens retornados são metadados de datasets, não jurisprudência nem resposta jurídica conclusiva."
+          if substantive else
+          "Conectores públicos foram consultados, mas não retornaram material aderente. Nenhuma conclusão jurídica foi emitida.")
+ return base("ok", query_or_input=query, sources=SOURCES, connected_sources=connected, connector_runs=connectors,
+             evidence=evidence, results=results, answer=None, substantive_answer=False, message=message)
 
-class Handler(BaseHTTPRequestHandler):
-    server_version = "LexSearchCoreV06/0.6"
+class H(BaseHTTPRequestHandler):
+ server_version="LexSearchCore/0.7"
+ def log_message(self, fmt,*args): print(fmt%args, flush=True)
+ def sendj(self, code,obj):
+  raw=json.dumps(obj,ensure_ascii=False,indent=2).encode()
+  self.send_response(code); self.send_header("Content-Type","application/json; charset=utf-8")
+  self.send_header("Cache-Control","no-store"); self.send_header("Access-Control-Allow-Origin","*")
+  self.send_header("Content-Length",str(len(raw))); self.end_headers(); self.wfile.write(raw)
+ def body(self):
+  n=int(self.headers.get("Content-Length","0") or 0)
+  try:return json.loads(self.rfile.read(n).decode()) if n else {}
+  except:return {}
+ def do_OPTIONS(self):
+  self.send_response(204); self.send_header("Access-Control-Allow-Origin","*")
+  self.send_header("Access-Control-Allow-Headers","Content-Type, Authorization, X-Lex-API-Key")
+  self.send_header("Access-Control-Allow-Methods","GET, POST, OPTIONS"); self.end_headers()
+ def do_GET(self):
+  p=urlparse(self.path).path
+  if p in ["/","/health","/ready","/v1/health/search-core"]:
+   return self.sendj(200,base("ok",started_at=STARTED,connected_sources=[s["id"] for s in SOURCES if s["status"]=="connected"]))
+  if p=="/v1/sources/registry":
+   return self.sendj(200,base("ok",sources=SOURCES,limitations=["STJ/TSE ativos apenas como catálogos oficiais de dados abertos.","DataJud e DOU dependem de segredo externo.","LexML bloqueado por desafio de segurança no acesso servidor.","STF pendente de validação TLS."]))
+  return self.sendj(404,base("error",error="not_found",path=p))
+ def do_POST(self):
+  p=urlparse(self.path).path; b=self.body()
+  q=b.get("query") or b.get("q") or b.get("term") or ""
+  if p in ["/v1/search","/v1/search/","/v1/search/global","/v1/search/jurisprudencia","/v1/search/legislacao"]:
+   if not str(q).strip(): return self.sendj(400,base("error",error="query_required"))
+   return self.sendj(200,do_search(str(q),int(b.get("limit",5) or 5)))
+  return self.sendj(404,base("error",error="not_found",path=p))
 
-    def log_message(self, fmt, *args):
-        print("%s %s" % (self.address_string(), fmt % args), flush=True)
-
-    def send_json(self, code, payload):
-        raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type","application/json; charset=utf-8")
-        self.send_header("Cache-Control","no-store")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def read_body(self):
-        length = int(self.headers.get("Content-Length","0") or "0")
-        if length <= 0:
-            return {}
-        raw = self.rfile.read(length).decode("utf-8", "ignore")
-        try:
-            return json.loads(raw) if raw.strip() else {}
-        except Exception:
-            return {"raw": raw}
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin","*")
-        self.send_header("Access-Control-Allow-Headers","Content-Type, X-Lex-API-Key, Authorization")
-        self.send_header("Access-Control-Allow-Methods","GET, POST, OPTIONS")
-        self.end_headers()
-
-    def do_GET(self):
-        path = urlparse(self.path).path
-        if path in ["/", "/health", "/ready", "/v1/health/search-core"]:
-            return self.send_json(200, base("ok", started_at=STARTED_AT, capabilities=len(CAPABILITIES)))
-        if path == "/v1/sources/registry":
-            return self.send_json(200, base("ok", sources=SOURCES, capabilities=CAPABILITIES, limitations=[
-                "Conectores reais ainda devem ser validados fonte a fonte.",
-                "Credenciais e segredos ficam fora do chat.",
-                "Sistemas autenticados exigem gate A4 e revisão humana."
-            ]))
-        if path == "/v1/events":
-            return self.send_json(200, base("ok", query_or_input={}, events=[], evidence=[], limitations=["Monitoramento contínuo ainda não persiste eventos neste runtime."], write_executed=False))
-        if path.startswith("/v1/processos/"):
-            numero = path.split("/v1/processos/",1)[1].strip("/")
-            if not numero:
-                return self.send_json(400, base("error", error="numero_cnj_required"))
-            status = "source_insufficient"
-            if not cnj_like(numero):
-                status = "source_insufficient"
-            return self.send_json(200, base(status, query_or_input={"numero_cnj": numero}, sources=planned_sources("processos"), evidence=[], result=None, message="Contrato ativo. Conector real de processo ainda não confirmou dados; nada foi inventado."))
-        return self.send_json(404, base("error", error="not_found", path=path))
-
-    def do_POST(self):
-        path = urlparse(self.path).path
-        body = self.read_body()
-        q = safe_query(body)
-        if path in ["/v1/search/global", "/v1/search", "/v1/search/"]:
-            return self.send_json(200, base("ok", query_or_input=q, sources=planned_sources("global"), evidence=[], results=[], message="Busca global v0.6: contrato ativo com fontes planejadas; conectores reais serão ativados sem inventar resultado."))
-        if path == "/v1/search/legislacao":
-            return self.send_json(200, base("ok", query_or_input=q, sources=planned_sources("legislacao"), evidence=[], results=[], message="Legislação: LexML/SRU e DOU planejados/pendentes de conector real."))
-        if path == "/v1/search/jurisprudencia":
-            return self.send_json(200, base("ok", query_or_input=q, sources=planned_sources("jurisprudencia"), evidence=[], results=[], message="Jurisprudência: contrato ativo. Sem acórdão real validado, não há citação inventada."))
-        if path in ["/v1/search/processos", "/v1/processos/search"]:
-            return self.send_json(200, base("source_insufficient", query_or_input=q, sources=planned_sources("processos"), evidence=[], results=[], accepted_keys=["numero_cnj","cpf","cnpj","nome","oab","tribunal"], message="Consulta processual comercial iniciada como contrato seguro. Conector real ainda pendente/needs_secret."))
-        if path in ["/v1/search/diarios", "/v1/diarios/search"]:
-            return self.send_json(200, base("planned", query_or_input=q, sources=planned_sources("diarios"), evidence=[], results=[], message="Busca em diários preparada; coleta/indexação ampla ainda pendente."))
-        if path == "/v1/watchlists":
-            return self.send_json(202, base("planned", query_or_input=q, watchlist_id="dryrun-"+uuid.uuid4().hex[:12], write_executed=False, evidence=[], message="Watchlist recebida em contrato dry-run; persistência/eventos/webhooks ainda não ativados."))
-        if path == "/v1/refresh-jobs":
-            return self.send_json(202, base("planned", query_or_input=q, refresh_job_id="dryrun-"+uuid.uuid4().hex[:12], write_executed=False, evidence=[], message="Atualização sob demanda preparada em dry-run; nenhum robô real executado."))
-        return self.send_json(404, base("error", error="not_found", path=path, query_or_input=q))
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT","8080"))
-    httpd = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"{SERVICE} {VERSION} listening on {port}", flush=True)
-    httpd.serve_forever()
+if __name__=="__main__":
+ ThreadingHTTPServer(("0.0.0.0",8080),H).serve_forever()
 PY
 
-echo "3) Replace search core container"
+docker inspect "$SEARCH" >/tmp/lex-v07-backups/search-before-$STAMP.json 2>/dev/null || true
 docker rm -f "$SEARCH" >/dev/null 2>&1 || true
 docker run -d --name "$SEARCH" --restart unless-stopped --network "$NET" -v "$APP_DIR:/app:ro" -w /app python:3.12-alpine python server.py >/dev/null
 sleep 4
 
-echo "4) Attach search core to every Caddy network"
-docker inspect "$CADDY" > /tmp/caddy.inspect.json
-python3 - <<'PY' > /tmp/caddy.networks
-import json
-d=json.load(open('/tmp/caddy.inspect.json'))[0]
-for n in d.get('NetworkSettings',{}).get('Networks',{}).keys():
-    print(n)
-PY
-while IFS= read -r net; do
-  [ -n "$net" ] || continue
-  echo "CONNECT_NETWORK=$net"
-  docker network connect "$net" "$SEARCH" >/dev/null 2>&1 || true
-done < /tmp/caddy.networks
-
-echo "5) Load runtime Caddy with Lex v0.6 routes"
-docker cp "$CADDY:/etc/caddy/Caddyfile" "/tmp/Caddyfile.before-lex-v06-$STAMP" 2>/dev/null || true
-cat > /tmp/Caddyfile.lexv06 <<'EOF'
-{
-    email milena@peterle.adv.br
-}
-
-actions.homosapiens.id {
-    reverse_proxy media-studio-api:8000
-}
-
-api.homosapiens.id, juridica.peterle.adv.br {
-    reverse_proxy homosapiens-lex-api:8080
-}
-
-lex.homosapiens.id {
-    handle /v1/search* {
-        reverse_proxy homosapiens-lex-search:8080
-    }
-    handle /v1/sources* {
-        reverse_proxy homosapiens-lex-search:8080
-    }
-    handle /v1/processos* {
-        reverse_proxy homosapiens-lex-search:8080
-    }
-    handle /v1/diarios* {
-        reverse_proxy homosapiens-lex-search:8080
-    }
-    handle /v1/watchlists* {
-        reverse_proxy homosapiens-lex-search:8080
-    }
-    handle /v1/events* {
-        reverse_proxy homosapiens-lex-search:8080
-    }
-    handle /v1/refresh-jobs* {
-        reverse_proxy homosapiens-lex-search:8080
-    }
-    handle /v1/health/search-core* {
-        reverse_proxy homosapiens-lex-search:8080
-    }
-    handle /v1/datajud* {
-        reverse_proxy homosapiens-lex-datajud:8080
-    }
-    handle /datajud* {
-        reverse_proxy homosapiens-lex-datajud:8080
-    }
-    handle {
-        reverse_proxy homosapiens-lex-api:8080
-    }
-}
-
-homosapiens.id, www.homosapiens.id {
-    reverse_proxy homosapiens-site:80
-}
-EOF
-
-docker cp /tmp/Caddyfile.lexv06 "$CADDY:/etc/caddy/Caddyfile"
-docker exec "$CADDY" caddy fmt --overwrite /etc/caddy/Caddyfile
+echo "POST_TEST_HEALTH"
+docker run --rm --network "$NET" curlimages/curl:8.10.1 -fsS "http://$SEARCH:8080/health" | grep -q '"version": "0.7.0-public-connectors"'
+echo "POST_TEST_SOURCES"
+docker run --rm --network "$NET" curlimages/curl:8.10.1 -fsS "http://$SEARCH:8080/v1/sources/registry" | grep -q '"status": "connected"'
+echo "POST_TEST_SEARCH"
+docker run --rm --network "$NET" curlimages/curl:8.10.1 -fsS -H 'Content-Type: application/json' -d '{"query":"jurisprudencia alimentos adolescente","limit":3}' "http://$SEARCH:8080/v1/search" | grep -q '"connector_runs"'
 docker exec "$CADDY" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-docker exec "$CADDY" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile || true
-sleep 5
-
-echo "6) Self-tests"
-FIRST_NET="$(head -n 1 /tmp/caddy.networks)"
-echo "TEST_SEARCH_HEALTH"
-docker run --rm --network "$FIRST_NET" curlimages/curl:8.11.1 -fsS "http://$SEARCH:8080/v1/health/search-core" | head -c 220; echo
-echo "TEST_SOURCES_REGISTRY_VIA_CADDY"
-docker run --rm --network "$FIRST_NET" curlimages/curl:8.11.1 -ksS --connect-to lex.homosapiens.id:443:"$CADDY":443 -o /tmp/out -w 'HTTP=%{http_code} SIZE=%{size_download}\n' https://lex.homosapiens.id/v1/sources/registry || true
-echo "TEST_PROCESS_SEARCH_VIA_CADDY"
-docker run --rm --network "$FIRST_NET" curlimages/curl:8.11.1 -ksS --connect-to lex.homosapiens.id:443:"$CADDY":443 -H 'Content-Type: application/json' -d '{"nome":"teste seguro","dry_run":true}' -o /tmp/out2 -w 'HTTP=%{http_code} SIZE=%{size_download}\n' https://lex.homosapiens.id/v1/processos/search || true
-
-echo "7) Containers"
-docker ps --format 'CONTAINER={{.Names}} STATUS={{.Status}} PORTS={{.Ports}}' | grep -E 'homosapiens-lex-search|media-studio-caddy' || true
-
-echo "LEX_SEARCH_CORE_V06_DEPLOY_OK"
+docker exec "$CADDY" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+echo "LEX_SEARCH_CORE_V07_PUBLIC_CONNECTORS_OK"
