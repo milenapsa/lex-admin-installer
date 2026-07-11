@@ -65,12 +65,12 @@ sleep 4
 
 echo "5) Post-tests"
 docker run --rm --network "$NET" curlimages/curl:8.10.1 -fsS "http://$UI/" | grep -q 'Pesquise. Verifique.'
-docker run --rm --network "$NET" curlimages/curl:8.10.1 -kfsS --resolve lex.homosapiens.id:443:"$CADDY" https://lex.homosapiens.id/ | grep -q 'Pesquise. Verifique.'
-docker run --rm --network "$NET" curlimages/curl:8.10.1 -kfsS --resolve lex.homosapiens.id:443:"$CADDY" \
+docker run --rm --network "$NET" curlimages/curl:8.10.1 -kfsS https://lex.homosapiens.id/ | grep -q 'Pesquise. Verifique.'
+docker run --rm --network "$NET" curlimages/curl:8.10.1 -kfsS \
   -H 'Content-Type: application/json' \
   -d '{"query":"requisitos da tutela de urgencia no CPC","limit":3}' \
   https://lex.homosapiens.id/v1/search | grep -q '"query_or_input"'
-docker run --rm --network "$NET" curlimages/curl:8.10.1 -kfsS --resolve lex.homosapiens.id:443:"$CADDY" \
+docker run --rm --network "$NET" curlimages/curl:8.10.1 -kfsS \
   https://lex.homosapiens.id/health | grep -q '"status"'
 
 docker ps --filter "name=$UI" --format 'CONTAINER={{.Names}} STATUS={{.Status}}'
